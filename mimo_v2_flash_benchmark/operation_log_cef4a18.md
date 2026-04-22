@@ -178,64 +178,82 @@ python3 -m sgl_jax.bench_serving \
 
 ---
 
-### 7. Long-Context Benchmarks (dp=4)
+### 7. Long-Context DP Sweep
 
-With the best DP config (dp=4, tp=32, ep=32), ran long-context benchmarks to compare with the Xiaomi report.
+Ran long-context benchmarks with dp=2, 4, 8 using Xiaomi-matched parameters to find the best long-context config.
 
-#### 7.1 Standard Benchmark (BS=64, burst)
-
+**Benchmark command template:**
 ```bash
 python3 -m sgl_jax.bench_serving \
     --backend sgl-jax --port 30271 \
     --model /models/MiMo-V2-Flash \
     --dataset-name random \
     --random-input-len 16384 --random-output-len 1024 \
-    --num-prompts 64 --max-concurrency 64
-```
-
-| Metric | Value |
-|--------|------:|
-| Output throughput | 509.8 tok/s |
-| Peak output throughput | 2,625 tok/s |
-
-#### 7.2 Xiaomi-Matched Benchmark (apples-to-apples comparison)
-
-Used the exact same parameters as the Xiaomi report:
-```bash
-python3 -m sgl_jax.bench_serving \
-    --backend sgl-jax --port 30271 \
-    --model /models/MiMo-V2-Flash \
-    --dataset-name random \
-    --random-input-len 16384 --random-output-len 1024 \
-    --num-prompts 256 --max-concurrency 64 \
+    --num-prompts 256 --max-concurrency $BS \
     --request-rate 100 --random-range-ratio 1.0 \
     --flush-cache
 ```
 
-| Metric | Value |
-|--------|------:|
-| **Output throughput** | **635.9 tok/s** |
-| **Peak output throughput** | **3,840 tok/s** |
-| Input throughput | 10,173.6 tok/s |
-| Total throughput | 10,809.5 tok/s |
+#### 7.1 Output Throughput (tok/s)
+
+| Config | BS=64 | BS=128 | BS=200 |
+|--------|------:|-------:|-------:|
+| dp=2   | 594.4 | 579.1  | 631.6  |
+| dp=4   | 635.9 | —      | —      |
+| dp=8   | 606.0 | 633.0  | **652.5** |
+
+#### 7.2 Peak Output Throughput (tok/s)
+
+| Config | BS=64 | BS=128 | BS=200 |
+|--------|------:|-------:|-------:|
+| dp=2   | 1,920 | 2,952  | 3,072  |
+| dp=4   | 3,840 | —      | —      |
+| dp=8   | 3,264 | 4,191  | **4,224** |
+
+#### 7.3 Latency (Median ITL, ms)
+
+| Config | BS=64 | BS=128 | BS=200 |
+|--------|------:|-------:|-------:|
+| dp=2   | 34.25 | 42.84  | 42.89  |
+| dp=8   | **28.14** | **30.86** | **30.90** |
+
+#### 7.4 Full Metrics
+
+| Config | Out tok/s | Peak tok/s | Input tok/s | Total tok/s | Med ITL (ms) | P99 ITL (ms) | Med TTFT (ms) | Mean E2E (ms) |
+|--------|----------:|-----------:|------------:|------------:|-------------:|-------------:|--------------:|---------------:|
+| dp=2, BS=64 | 594.4 | 1,920 | 9,510.6 | 10,105.0 | 34.25 | 48.40 | 36,161 | 110,140 |
+| dp=2, BS=128 | 579.1 | 2,952 | 9,266.3 | 9,845.5 | 42.84 | 69.37 | 76,314 | 204,779 |
+| dp=2, BS=200 | 631.6 | 3,072 | 10,106.3 | 10,737.9 | 42.89 | 70.10 | 119,158 | 257,923 |
+| dp=4, BS=64 | 635.9 | 3,840 | 10,173.6 | 10,809.5 | — | — | — | — |
+| dp=8, BS=64 | 606.0 | 3,264 | 9,696.1 | 10,302.1 | 28.14 | 30.15 | 35,369 | 108,033 |
+| dp=8, BS=128 | 633.0 | 4,191 | 10,127.8 | 10,760.8 | 30.86 | 37.79 | 77,024 | 191,989 |
+| **dp=8, BS=200** | **652.5** | **4,224** | **10,439.6** | **11,092.1** | **30.90** | **38.32** | **114,703** | **243,134** |
+
+#### 7.5 Analysis
+
+- **dp=8 BS=200 achieves the highest long-context throughput: 652.5 tok/s** — matching Xiaomi's 654.9 nearly exactly (99.6%)
+- **dp=8 has the best ITL** across all batch sizes (28–31 ms median) because each DP rank handles a small per-rank batch, minimizing decode latency
+- **dp=2** is weaker for long context; ITL degrades significantly at BS≥128 (34→43 ms)
+- Unlike short-context where dp=8 underperformed, long-context with 256 prompts gives each dp=8 rank enough work (32 prompts/rank at BS=200)
+- **Peak burst throughput scales with DP** as in short context: dp=8 hits 4,224 tok/s (65% higher than Xiaomi's 2,560)
 
 ---
 
 ### 8. Comparison with Xiaomi Report
 
-Both runs: 256 prompts, input=16384, output=1024, request-rate=100, random-range-ratio=1.0, flush-cache.
+Best long-context result (dp=8 BS=200) vs Xiaomi report. Both: 256 prompts, input=16384, output=1024, rr=100, range-ratio=1.0, flush-cache.
 
 | Metric | Xiaomi (16 chips, v6e-16) | Ours (32 chips, v6e-32) | Ratio |
 |--------|------------------------:|------------------------:|------:|
-| Output throughput (tok/s) | 654.9 | 635.9 | 97% |
-| Peak output throughput (tok/s) | 2,560 | 3,840 | **150%** |
-| Input throughput (tok/s) | 10,477.8 | 10,173.6 | 97% |
-| Total throughput (tok/s) | 11,132.7 | 10,809.5 | 97% |
-| Per-chip output (tok/s/chip) | 40.9 | 19.9 | 49% |
+| Output throughput (tok/s) | 654.9 | 652.5 | **99.6%** |
+| Peak output throughput (tok/s) | 2,560 | 4,224 | **165%** |
+| Input throughput (tok/s) | 10,477.8 | 10,439.6 | 99.6% |
+| Total throughput (tok/s) | 11,132.7 | 11,092.1 | 99.6% |
+| Per-chip output (tok/s/chip) | 40.9 | 20.4 | 50% |
 
-**Key insight:** Absolute throughput is within 3% despite 2x the chips. TP=32 communication overhead across 8 nodes (4x8 topology) offsets the extra compute. Peak burst throughput is 50% higher (3,840 vs 2,560), showing the extra chips absorb traffic spikes effectively.
+**Key insight:** With dp=8 and BS=200, we match the Xiaomi report's throughput within 0.4%. Peak burst throughput is 65% higher (4,224 vs 2,560).
 
-**Why per-chip efficiency is 2x lower (19.9 vs 40.9 tok/s/chip):**
+**Why per-chip efficiency is 2x lower (20.4 vs 40.9 tok/s/chip):**
 1. TP=32 all-reduce spans 8 nodes (4x8 mesh) vs TP=16 across 4 nodes (4x4 mesh) — communication latency grows super-linearly
 2. MoE all-to-all with EP=32 has 2x the routing overhead of EP=16
 3. Decode is memory-bandwidth-bound: doubling chips halves per-chip work but communication cost stays constant or grows

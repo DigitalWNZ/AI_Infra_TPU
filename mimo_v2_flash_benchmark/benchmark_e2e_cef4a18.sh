@@ -289,22 +289,23 @@ run_dp_sweep() {
 }
 
 # =============================================================================
-# Step 7: Long-context benchmark with best DP config
+# Step 7: Long-context DP sweep (Xiaomi-matched parameters)
 # =============================================================================
 run_long_context() {
-    log "Step 7: Running long-context benchmarks with dp=${BEST_DP}..."
+    log "Step 7: Running long-context DP sweep (input=16384, output=1024, Xiaomi-matched)..."
 
-    kill_servers
-    launch_server "${BEST_DP}"
+    for dp in 2 4 8; do
+        log "--- Long-context DP=${dp} ---"
+        kill_servers
+        launch_server "${dp}"
 
-    # Standard benchmark
-    run_benchmark "dp${BEST_DP}_long_bs64" 16384 1024 64 64
+        for bs in 64 128 200; do
+            run_benchmark "dp${dp}_long_bs${bs}" 16384 1024 256 "${bs}" \
+                "--request-rate 100 --random-range-ratio 1.0 --flush-cache"
+        done
+    done
 
-    # Xiaomi-matched parameters (apples-to-apples comparison)
-    run_benchmark "dp${BEST_DP}_long_xiaomi" 16384 1024 256 64 \
-        "--request-rate 100 --random-range-ratio 1.0 --flush-cache"
-
-    log "Long-context benchmarks complete."
+    log "Long-context DP sweep complete."
 }
 
 # =============================================================================
@@ -322,28 +323,26 @@ print_summary() {
     log "Config: TP=${TP_SIZE}, EP=${EP_SIZE}, best DP=${BEST_DP}"
     log ""
 
-    log "--- DP Sweep Results (input=1024, output=512) ---"
+    log "--- Short-Context DP Sweep (input=1024, output=512) ---"
     for dp in 1 2 4 8; do
         for bs in 64 128; do
             local file="/tmp/bench_dp${dp}_bs${bs}.json"
             local out_tput
-            out_tput=$(ssh_worker 0 "python3 -c \"import json; print(json.load(open('${file}')).get('output_throughput', 'N/A'))\"" 2>/dev/null || echo "N/A")
-            log "  dp=${dp}, BS=${bs}: ${out_tput} output tok/s"
+            out_tput=$(ssh_worker 0 "python3 -c \"import json; d=json.load(open('${file}')); print(f'{d[\"output_throughput\"]:.1f} out tok/s, {d[\"max_output_tokens_per_s\"]:.0f} peak')\"" 2>/dev/null || echo "N/A")
+            log "  dp=${dp}, BS=${bs}: ${out_tput}"
         done
     done
 
     log ""
-    log "--- Long-Context Results (dp=${BEST_DP}, input=16384, output=1024) ---"
-
-    local std_file="/tmp/bench_dp${BEST_DP}_long_bs64.json"
-    local std_tput
-    std_tput=$(ssh_worker 0 "python3 -c \"import json; print(json.load(open('${std_file}')).get('output_throughput', 'N/A'))\"" 2>/dev/null || echo "N/A")
-    log "  Standard (BS=64, burst): ${std_tput} output tok/s"
-
-    local xiaomi_file="/tmp/bench_dp${BEST_DP}_long_xiaomi.json"
-    local xiaomi_tput
-    xiaomi_tput=$(ssh_worker 0 "python3 -c \"import json; print(json.load(open('${xiaomi_file}')).get('output_throughput', 'N/A'))\"" 2>/dev/null || echo "N/A")
-    log "  Xiaomi-matched (256 prompts, rr=100): ${xiaomi_tput} output tok/s"
+    log "--- Long-Context DP Sweep (input=16384, output=1024, Xiaomi-matched) ---"
+    for dp in 2 4 8; do
+        for bs in 64 128 200; do
+            local file="/tmp/bench_dp${dp}_long_bs${bs}.json"
+            local out_tput
+            out_tput=$(ssh_worker 0 "python3 -c \"import json; d=json.load(open('${file}')); print(f'{d[\"output_throughput\"]:.1f} out tok/s, {d[\"max_output_tokens_per_s\"]:.0f} peak')\"" 2>/dev/null || echo "N/A")
+            log "  dp=${dp}, BS=${bs}: ${out_tput}"
+        done
+    done
 
     log ""
     log "Results JSON files on worker-0: /tmp/bench_*.json"
