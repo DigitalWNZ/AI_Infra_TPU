@@ -6,11 +6,21 @@ This directory contains the complete artifacts from benchmarking Xiaomi's **MiMo
 
 ## File Overview
 
+### Commit cef4a18 (DP-Enabled, recommended)
+
 | File | Purpose |
 |------|---------|
-| `benchmark_report.md` | Final benchmark report with results, analysis, and comparison to Xiaomi's reference |
-| `operation_log.md` | Chronological log of every step taken, including errors and fixes |
-| `benchmark_e2e.sh` | Automated end-to-end script that reproduces the full benchmark |
+| `benchmark_report_cef4a18.md` | Performance report with DP sweep, long-context results, and Xiaomi comparison |
+| `operation_log_cef4a18.md` | Operation log for cef4a18 branch: setup, errors, DP sweep, benchmarks |
+| `benchmark_e2e_cef4a18.sh` | E2E script using cef4a18 with dp=4 sweep and Xiaomi-matched benchmark |
+
+### origin/main branch (dp=1 only)
+
+| File | Purpose |
+|------|---------|
+| `benchmark_report.md` | Benchmark report on main branch (dp=1) with Xiaomi comparison |
+| `operation_log.md` | Operation log for main branch: setup, errors, benchmarks |
+| `benchmark_e2e.sh` | E2E script using origin/main with dp=1 |
 | `install_v2.sh` | Per-worker dependency installation (used during the benchmark) |
 | `install.sh` | Initial install attempt using pip (superseded by `install_v2.sh`) |
 | `launch_server.sh` | Per-worker server launch command |
