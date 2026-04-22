@@ -218,3 +218,71 @@ bash benchmark_e2e.sh a6e-wangez us-east5-b 0-wangez jingnw-mimo-v2-flash-us-eas
 5. Runs performance benchmark: BS=64, input=16384, output=1024
 6. Runs accuracy benchmark: GSM8K, 200 samples via evalscope
 7. Prints summary with all results
+
+---
+
+### 10. DP Investigation and Parallelism Sweep (2026-04-22)
+
+#### 10.1 Why dp=4 Worked in Xiaomi Report but Crashes on main
+
+The Xiaomi report used commit `cef4a181508ef22b452a38fe4210478e2e3672b1` on `epic/mimo-v2-flash`. This commit is **not on any current branch** — it was force-pushed away. It contains 19 additional commits beyond the current `epic/mimo-v2-flash` HEAD, including:
+
+**Key commit: `78236489` — "Merge pull request #213 from primatrix/prim-dp — data parallelism"**
+
+This PR added 8,652 lines across 67 files implementing a complete in-scheduler DP system:
+- Removes the `if dp_size == 1 ... else: pass` branching in `engine.py`
+- DP is implemented inside the single scheduler using JAX's SPMD model
+- Mesh shaped as `(data=dp_size, tensor=tp_size/dp_size)`
+- Per-DP request queues, KV cache allocators, radix caches
+- Includes `docs/design/data_parallelism.md` design document
+
+Both `origin/main` and `epic/mimo-v2-flash` currently have the broken `else: pass` stub:
+```python
+if server_args.dp_size == 1:
+    scheduler_pipe_readers = []
+    # ... launch scheduler ...
+else:
+    pass    # DP > 1 NOT IMPLEMENTED → UnboundLocalError at line 632
+```
+
+#### 10.2 Switching to Commit cef4a18
+
+```bash
+# Fetch and checkout the orphaned commit on all workers
+gcloud compute tpus tpu-vm ssh a6e-wangez --zone=us-east5-b --worker=all \
+  --command="cd /sglang-jax && git fetch origin cef4a18 && git checkout cef4a18"
+
+# Symlink missing safetensors from GCS (cef4a18 weight loader needs all 145 files)
+gcloud compute tpus tpu-vm ssh a6e-wangez --zone=us-east5-b --worker=all \
+  --command="for f in /tmp/gcs_model/*.safetensors; do
+    base=\$(basename \$f)
+    [ ! -e /models/MiMo-V2-Flash/\$base ] && ln -s \$f /models/MiMo-V2-Flash/\$base
+  done"
+```
+
+**Note:** The `cef4a18` weight loader expects all 145 safetensors files (split format), while `main` only needed 41 (merged format). Created symlinks from GCS mount for the 104 missing files.
+
+#### 10.3 DP Sweep Results
+
+All configs: tp=32, ep=32, moe_backend=epmoe, input=1024, output=512
+
+| Config | Mesh (data, tensor) | BS=64 Out tok/s | BS=128 Out tok/s | BS=200 Out tok/s |
+|--------|--------------------:|----------------:|-----------------:|-----------------:|
+| dp=1   | (1, 32)             | 1,259           | 1,506            | 1,506            |
+| dp=2   | (2, 16)             | 1,325           | 1,741            | 1,600            |
+| **dp=4** | **(4, 8)**        | **1,315**       | **1,808**        | **1,384**        |
+| dp=8   | (8, 4)              | 1,133           | 1,608            | 1,046            |
+
+**Best config: dp=4 at BS=128 → 1,808 output tok/s (+20% over dp=1)**
+
+**Peak output throughput (burst):**
+| dp=1 | dp=2 | dp=4 | dp=8 |
+|------|------|------|------|
+| 2,667 | 3,239 | 3,704 | 4,025 |
+
+#### 10.4 Analysis
+
+- **dp=2** is the most consistent: strong across all batch sizes, best total throughput at BS=128 (5,177 tok/s)
+- **dp=4** achieves the highest peak output throughput (1,808 out tok/s at BS=128, 3,704 peak burst) but degrades at high concurrency (BS=200) because each DP rank only gets 50 requests
+- **dp=8** underperforms across the board: only 4 tensor chips per DP rank means insufficient compute per batch element, and the overhead of 8-way DP coordination outweighs the parallelism benefit
+- The DP design doc at `cef4a18` explicitly notes "No DP+MoE support (to be designed separately)" — but the implementation works because EPMoE creates its own separate mesh for expert routing, independent of the scheduler's DP mesh
