@@ -14,8 +14,8 @@ We benchmarked **MiMo-V2-Flash** (Xiaomi's Mixture-of-Experts model with 256 rou
 - **Output throughput:** 571.9 tok/s at BS=64 (long context), scaling to 1,523.6 tok/s at BS=64 (short context)
 - **Decode latency:** 17-23 ms median inter-token latency across all configurations
 - **Accuracy:** 97.5% on GSM8K (200 samples, greedy decoding)
-- **Per-chip efficiency:** ~17.9 output tok/s/chip — **1.75x higher** than the Xiaomi report's 10.2 tok/s/chip on v6e-64
-- **vs. Xiaomi report:** With half the chips (32 vs 64), we achieve 87% of their output throughput and 20% lower median ITL, driven by DP=1 eliminating inter-group contention and burst-mode request scheduling
+- **Per-chip efficiency:** ~17.9 output tok/s/chip — **vs. Xiaomi report's 40.9 tok/s/chip** on v6e-16 (16 chips, TP=16, EP=16)
+- **vs. Xiaomi report:** The report achieves higher per-chip efficiency on 16 chips with TP=16. Our TP=32 on 32 chips has 2x more all-reduce communication overhead, resulting in ~56% lower per-chip throughput. See Section 5 for detailed analysis.
 
 ---
 
@@ -96,38 +96,45 @@ All configurations achieved **100% success rate** (0 failed requests across all 
 
 ---
 
-## 5. Comparison with Xiaomi Report (v6e-64, TP=16, EP=16, DP=4)
+## 5. Comparison with Xiaomi Report (v6e-16, TP=16, EP=16)
 
 **Reference:** "基于 SGLangJax 的 mimo_v2_flash 报告" (2026-04-10)
-- **Hardware:** TPU v6e, topo 4x4, 4 nodes = **64 chips**
+- **Hardware:** TPU v6e-16, topo 4x4, 4 nodes x 4 chips = **16 chips**
 - **Branch:** `epic/mimo-v2-flash` (commit `cef4a18`)
-- **Parallelism:** TP=16, EP=16, **DP=4**
+- **Parallelism:** TP=16, EP=16, `--dp-size 4` (see note below)
+- **Model code:** `mimo.py` — thin wrapper around Qwen2, no MiMo-V2-Flash-specific handling
 - **Benchmark:** 256 prompts, request-rate=100, `--random-range-ratio 1.0`, `--flush-cache`
+
+> **Note on `--dp-size 4`:** Despite being passed on the CLI, `dp_size > 1` is **not implemented** in
+> SGLangJax — the engine code path is literally `pass` on both `main` and `epic/mimo-v2-flash` branches.
+> The JAX device mesh is created as `(data=total_chips/tp_size, tensor=tp_size)`. With 16 chips and
+> tp=16, the mesh is `(data=1, tensor=16)` — effectively **DP=1**. The `--dp-size 4` flag had no effect.
 
 ### 5.1 Configuration Differences
 
 | Parameter | Xiaomi Report | Our Test | Impact |
 |-----------|:-------------|:---------|:-------|
-| **Chips** | 64 (4x4 topo, 4 nodes) | 32 (4x8 topo, 8 nodes) | 2x fewer chips |
-| **TP / EP** | 16 / 16 | 32 / 32 | Higher TP = more all-reduce overhead per step |
-| **DP** | **4** | **1** | Report has 4 independent serving groups |
-| **Branch** | `epic/mimo-v2-flash` | `origin/main` | Different code paths, optimizations |
+| **Chips** | **16** (4x4 topo, 4 nodes) | **32** (4x8 topo, 8 nodes) | We have 2x more chips |
+| **TP / EP** | 16 / 16 | 32 / 32 | Higher TP = more all-reduce overhead per decode step |
+| **DP** | 1 (effectively) | 1 | Same — single serving group |
+| **Branch** | `epic/mimo-v2-flash` | `origin/main` | See Section 5.5 for code differences |
+| **Model file** | `mimo.py` (Qwen2 wrapper) | `mimo_v2_flash.py` (dedicated) | See Section 5.5 |
 | **Num prompts** | 256 | 64 | Report runs 4x more requests |
 | **Request rate** | 100 req/s | Infinity (burst) | Report throttles input; ours sends all at once |
 | **random-range-ratio** | 1.0 (variable length) | 0.0 (fixed length) | Report has mixed lengths |
-| **flush-cache** | Yes | No | Report flushes KV cache between requests |
+| **flush-cache** | Yes | No | Report clears KV cache between batches |
 | **Accuracy generation** | temperature=0.8, top_p=0.95 | greedy (default) | Report uses sampling |
 | **Accuracy samples** | 1319 (full test set) | 200 (subset) | Our test is smaller |
 
 ### 5.2 Performance Comparison (BS=64, input=16384, output=1024)
 
-| Metric | Xiaomi (64 chips) | Ours (32 chips) | Ratio (ours/theirs) |
+| Metric | Xiaomi (16 chips) | Ours (32 chips) | Ratio (ours/theirs) |
 |--------|------------------:|----------------:|--------------------:|
 | Output throughput (tok/s) | 654.9 | 571.9 | 87.3% |
 | Peak output throughput (tok/s) | 2,560.0 | N/A | -- |
 | Input throughput (tok/s) | 10,477.8 | 8,760.9 | 83.6% |
 | Total throughput (tok/s) | 11,132.7 | 9,332.8 | 83.8% |
-| **Per-chip output throughput** | **10.2 tok/s** | **17.9 tok/s** | **1.75x** |
+| **Per-chip output throughput** | **40.9 tok/s** | **17.9 tok/s** | **0.44x** |
 | Median ITL (ms) | 29.40 | 23.45 | **0.80x (20% faster)** |
 | P99 ITL (ms) | 32.82 | 28.98 | 0.88x |
 | Mean ITL (ms) | 64.42 | 58.94 | 0.92x |
@@ -149,57 +156,77 @@ All configurations achieved **100% success rate** (0 failed requests across all 
 
 ### 5.4 Analysis
 
-#### Why our per-chip efficiency is 1.75x higher
+#### Why the report achieves higher per-chip throughput (40.9 vs 17.9 tok/s/chip)
 
-1. **DP=4 overhead in the report:** The report uses DP=4 (4 independent model replicas of TP=16/EP=16 each). While DP increases aggregate throughput, each DP group only has 16 chips. The 4 groups share inter-node bandwidth and memory bus, creating contention. Our single DP=1 group uses all 32 chips without inter-group interference.
+The report gets **87% of our absolute throughput on half the chips**. This means their per-chip efficiency is 2.3x ours. The primary reasons:
 
-2. **Request rate throttling:** The report uses `--request-rate 100` which throttles incoming requests to 100/s, while we use burst mode (all 64 requests at once). Throttled arrival means chips sit partially idle between request arrivals, reducing sustained throughput. Our burst mode keeps chips maximally utilized.
+1. **TP=16 vs TP=32 — communication overhead scales super-linearly.** Each decode step requires an all-reduce across all TP chips. With TP=32, the all-reduce spans 32 chips across 8 nodes (ICI + DCN), while TP=16 spans 16 chips across 4 nodes. The communication volume doubles, but latency increases more than 2x because:
+   - More chips = more synchronization barriers
+   - 8 nodes with 4x8 topology has longer ICI paths than 4 nodes with 4x4 topology
+   - MoE all-to-all communication also scales with EP size (32 vs 16)
 
-3. **`--flush-cache` in the report:** This forces clearing the KV cache, which adds overhead and prevents any benefit from warm cache state.
+2. **Fewer nodes = lower inter-node latency.** With 4 nodes, every chip is at most 1-2 ICI hops away in a 4x4 mesh. With 8 nodes in a 4x8 mesh, the maximum hop distance doubles, increasing all-reduce and all-to-all latency.
 
-4. **`--random-range-ratio 1.0` in the report:** This creates variable-length inputs (from 0 to 16384), leading to uneven prefill times across requests in the same batch. Our fixed-length inputs (all exactly 16384) allow more uniform batch processing.
+3. **Decode is memory-bandwidth-bound, not compute-bound.** Doubling the chips from 16 to 32 doubles aggregate HBM bandwidth, but the per-chip work halves. The all-reduce communication overhead doesn't halve — it stays roughly constant or grows — so the ratio of useful work to communication drops.
 
-#### Why our median ITL is 20% lower (23.45 ms vs 29.40 ms)
+#### Why our median ITL is still 20% lower (23.45 ms vs 29.40 ms)
 
-1. **TP=32 vs TP=16:** Counterintuitively, our higher TP gives faster per-token decode despite more all-reduce communication. With TP=32, each chip handles fewer parameters per layer, so the compute per step is smaller. The decode step is memory-bandwidth-bound (reading KV cache), and spreading across 32 chips reduces per-chip memory reads.
+Despite lower per-chip efficiency, our **absolute** ITL is better because:
 
-2. **DP=1 means no resource contention:** With DP=4, the 4 model replicas compete for shared interconnect bandwidth during all-reduce operations. Our DP=1 has exclusive access to all interconnect bandwidth.
+1. **2x the aggregate HBM bandwidth.** With 32 chips, we read KV cache 2x faster in parallel. Even though each chip does less work, the total KV cache read completes faster.
 
-3. **Lower effective concurrency:** Our concurrency is 55 vs their 63.9. Fewer concurrent requests means less KV cache pressure and smaller batch sizes in each decode step, which directly reduces ITL.
+2. **Benchmark methodology differences.** The report uses `--request-rate 100` (throttled) and `--random-range-ratio 1.0` (variable input lengths). Variable-length inputs cause batch padding waste and uneven prefill, increasing ITL variance. Our fixed-length inputs create uniform batches with predictable decode timing.
+
+3. **256 prompts vs 64 prompts.** With 4x more requests, the report's server has higher sustained load, leading to more prefill/decode interference and queuing delays.
 
 #### Why our TTFT is 46% lower (19s vs 35s)
 
-1. **Fewer total prompts:** We send 64 prompts vs their 256. With fewer prompts queued, each request waits less time in the prefill queue.
+1. **2x more chips for prefill.** TP=32 processes each 16K-token prompt's chunked prefill (8 chunks of 2048) faster because more chips work on each chunk in parallel.
 
-2. **DP=1 with TP=32:** Our larger TP group processes each prompt's prefill faster (more chips working on a single prompt's chunked prefill). The report's TP=16 takes longer per-prompt prefill.
+2. **Fewer total prompts.** 64 prompts vs 256 means shorter queuing time. The last prompt in our batch waits behind 63 others; in theirs, behind 255.
 
-3. **Burst vs throttled arrival:** Our burst sends all requests at once, and the server processes them in order. The report's rate=100 spreads arrivals over ~2.5s, but with 256 prompts total, the last prompts arrive 2.5s after the first, adding to queue delay.
-
-#### Why our total throughput is 87% of theirs despite having 50% of the chips
-
-This is the key insight: **our setup is significantly more efficient per chip**. The report's DP=4 configuration does not achieve 4x the throughput of a single DP=1 group. This is because:
-- MoE models with EP parallelism have high all-to-all communication costs that don't scale linearly
-- DP groups compete for shared node-level resources (memory bandwidth, ICI bandwidth)
-- The report's request-rate throttling and flush-cache prevent full utilization
+3. **Burst vs throttled arrival.** Our burst starts processing immediately. The report's 100 req/s rate means the 256th prompt doesn't even arrive until 2.5s after the first.
 
 #### Why our GSM8K accuracy is higher (97.5% vs 92.27%)
 
-1. **Greedy decoding vs sampling:** Our test uses greedy decoding (deterministic), while the report uses `temperature=0.8, top_p=0.95` (stochastic sampling). Greedy decoding typically yields higher accuracy on math benchmarks because it always picks the most probable token, avoiding sampling errors.
+1. **Greedy decoding vs sampling.** Our test uses greedy (deterministic, picks highest-probability token). The report uses `temperature=0.8, top_p=0.95` which introduces randomness — on math benchmarks, this consistently reduces accuracy by 3-5%.
 
-2. **Sample size:** We tested on 200 samples vs the full 1319. Smaller subsets can have higher variance. The first 200 samples may be slightly easier on average.
+2. **Sample size variance.** 200 samples vs full 1319. Our subset may skew slightly easier.
 
-3. **Code branch differences:** The `main` branch may have fixes that improve model output quality compared to `epic/mimo-v2-flash`.
+3. **Code differences.** The `main` branch has a dedicated `mimo_v2_flash.py` with proper handling of v_head_dim, attention_sink_bias, and SWA — the report's `mimo.py` uses a generic Qwen2 wrapper which may not handle all MiMo-V2-Flash features correctly.
 
-### 5.5 What the report's "baseline" comparison means
+### 5.5 Code and Model Differences Between Branches
+
+The report used `epic/mimo-v2-flash` branch; we used `origin/main`. Key differences:
+
+| Aspect | `epic/mimo-v2-flash` (report) | `origin/main` (ours) |
+|--------|-------------------------------|----------------------|
+| **Model file** | `mimo.py` — 49 lines, subclasses `Qwen2ForCausalLM` directly | `mimo_v2_flash.py` — 946 lines, dedicated implementation |
+| **Architecture name** | Likely `MiMoForCausalLM` (generic) | `MiMoV2FlashForCausalLM` (dedicated) |
+| **v_head_dim handling** | None (inherits Qwen2's uniform head_dim) | Explicit: V uses 128-dim, K uses 192-dim, with padding/slicing |
+| **SWA support** | Via Qwen2 base (limited) | Dedicated `hybrid_layer_pattern` routing with per-layer SWA/full attention config |
+| **attention_sink_bias** | Not handled | Full support: per-layer learnable sink bias for SWA layers |
+| **FP8 block dequant** | Basic (2D scale issue reported) | Full block dequant with o_proj special handling |
+| **SWA paged allocation** | Not supported (`assert not self.is_hybrid`) | Supported (commit `28244725`: dual-pool SWA mempool) |
+| **MoE FP8 kernel** | Basic EPMoE | Optimized FP8 EPMoE (commit `869de77c`) |
+| **SWA forward metadata** | Standard | Optimized (commit `32c87848`) |
+
+**Key commits on `main` not in `epic/mimo-v2-flash`:**
+- `1edfab11` — feat: support MiMo-V2-Flash model (dedicated model class)
+- `28244725` — feat: SWA mempool with paged allocation, eviction, dual-pool scheduling
+- `869de77c` — feat: FP8 quantization + FusedEPMoE kernel optimizations
+- `32c87848` — perf: optimize get_forward_metadata for SWA models
+
+### 5.6 What the report's "baseline" comparison means
 
 The report compares SGLangJax against a "baseline" system:
 - **Baseline:** 8 chips, median ITL = 20.86 ms, peak output throughput = 3,490 tok/s
-- **SGLangJax:** 16 chips (one DP group), median ITL = 29.40 ms, peak output throughput = 2,560 tok/s
-- **Normalized comparison** (applying 2/3 factor for 16-chip vs 8-chip): ITL 29.40 * 2/3 ≈ 19.6 ms (6% faster than baseline); throughput 3490 * 2/3 ≈ 2327 < 2560 (SGLangJax 10% higher)
+- **SGLangJax:** 16 chips, median ITL = 29.40 ms, peak output throughput = 2,560 tok/s
+- **Normalized comparison** (applying 2/3 factor for 16-chip vs 8-chip single-card target):
+  - ITL: 29.40 * 2/3 ≈ 19.6 ms (6% faster than baseline's 20.86 ms)
+  - Throughput: 3490 * 2/3 ≈ 2327 < 2560 (SGLangJax 10% higher)
 
-Our 32-chip result in this context:
-- **Our median ITL:** 23.45 ms. Normalized to 8-chip equivalent: 23.45 * 8/32 ≈ 5.86 ms — substantially faster than the baseline's 20.86 ms per chip, suggesting our TP=32 configuration is very efficient for decode.
-- However, this linear normalization is approximate — real scaling is non-linear due to communication overhead.
+The report's conclusion: SGLangJax on 16 chips is competitive with the 8-chip baseline on a per-chip basis, with 6% better ITL and 10% better peak throughput after normalization.
 
 ---
 
