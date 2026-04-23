@@ -280,7 +280,7 @@ run_dp_sweep() {
         kill_servers
         launch_server "${dp}"
 
-        for bs in 64 128; do
+        for bs in 64 128 200; do
             run_benchmark "dp${dp}_bs${bs}" 1024 512 "${bs}" "${bs}"
         done
     done
@@ -294,7 +294,7 @@ run_dp_sweep() {
 run_long_context() {
     log "Step 7: Running long-context DP sweep (input=16384, output=1024, Xiaomi-matched)..."
 
-    for dp in 2 4 8; do
+    for dp in 1 2 4 8; do
         log "--- Long-context DP=${dp} ---"
         kill_servers
         launch_server "${dp}"
@@ -325,7 +325,7 @@ print_summary() {
 
     log "--- Short-Context DP Sweep (input=1024, output=512) ---"
     for dp in 1 2 4 8; do
-        for bs in 64 128; do
+        for bs in 64 128 200; do
             local file="/tmp/bench_dp${dp}_bs${bs}.json"
             local out_tput
             out_tput=$(ssh_worker 0 "python3 -c \"import json; d=json.load(open('${file}')); print(f'{d[\"output_throughput\"]:.1f} out tok/s, {d[\"max_output_tokens_per_s\"]:.0f} peak')\"" 2>/dev/null || echo "N/A")
@@ -335,7 +335,7 @@ print_summary() {
 
     log ""
     log "--- Long-Context DP Sweep (input=16384, output=1024, Xiaomi-matched) ---"
-    for dp in 2 4 8; do
+    for dp in 1 2 4 8; do
         for bs in 64 128 200; do
             local file="/tmp/bench_dp${dp}_long_bs${bs}.json"
             local out_tput

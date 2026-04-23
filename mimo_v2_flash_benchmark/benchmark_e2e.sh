@@ -222,7 +222,8 @@ run_perf_benchmark() {
 
     mkdir -p "${RESULTS_DIR}" 2>/dev/null || true
 
-    local bench_cmd="
+    for bs in 64 128 200; do
+        local bench_cmd="
 export PATH=\"\$HOME/.local/bin:\$PATH\"
 source ${VENV_DIR}/bin/activate
 python3 -m sgl_jax.bench_serving \
@@ -230,17 +231,17 @@ python3 -m sgl_jax.bench_serving \
     --model ${MODEL_DIR} \
     --dataset-name random \
     --random-input-len 16384 --random-output-len 1024 \
-    --num-prompts 64 --max-concurrency 64 \
-    --output-file /tmp/bench_result.json
+    --num-prompts ${bs} --max-concurrency ${bs} \
+    --output-file /tmp/bench_bs${bs}.json
 "
-    log "  Running: BS=64, input=16384, output=1024"
-    ssh_worker 0 "${bench_cmd}"
+        log "  Running: BS=${bs}, input=16384, output=1024"
+        ssh_worker 0 "${bench_cmd}"
+    done
 
     log "  Fetching results..."
-    gcloud compute tpus tpu-vm scp "${CLUSTER_NAME}:0:/tmp/bench_result.json" \
-        "${RESULTS_DIR}/perf_benchmark.json" ${SSH_OPTS} 2>/dev/null || true
-
-    ssh_worker 0 "cat /tmp/bench_result.json" 2>/dev/null > "${RESULTS_DIR}/perf_benchmark.json" 2>/dev/null || true
+    for bs in 64 128 200; do
+        ssh_worker 0 "cat /tmp/bench_bs${bs}.json" 2>/dev/null > "${RESULTS_DIR}/perf_bs${bs}.json" 2>/dev/null || true
+    done
 
     log "Performance benchmark complete."
 }
@@ -287,22 +288,12 @@ print_summary() {
     log "Config: TP=${NUM_CHIPS}, EP=${NUM_CHIPS}, DP=1"
     log ""
 
-    if [ -f "${RESULTS_DIR}/perf_benchmark.json" ]; then
-        log "--- Performance Results ---"
-        ssh_worker 0 "
-source ${VENV_DIR}/bin/activate
-python3 -c \"
-import json
-with open('/tmp/bench_result.json') as f:
-    d = json.load(f)
-print(f'Output throughput: {d.get(\"output_throughput\", \"N/A\")} tok/s')
-print(f'Total throughput:  {d.get(\"total_throughput\", \"N/A\")} tok/s')
-print(f'Median TTFT:       {d.get(\"median_ttft_ms\", \"N/A\")} ms')
-print(f'Median ITL:        {d.get(\"median_itl_ms\", \"N/A\")} ms')
-print(f'Mean E2E latency:  {d.get(\"mean_e2e_latency_ms\", \"N/A\")} ms')
-print(f'Successful reqs:   {d.get(\"completed\", \"N/A\")}/{d.get(\"total\", \"N/A\")}')
-\"" 2>/dev/null || log "(could not parse perf results)"
-    fi
+    log "--- Performance Results (input=16384, output=1024) ---"
+    for bs in 64 128 200; do
+        local out_tput
+        out_tput=$(ssh_worker 0 "python3 -c \"import json; d=json.load(open('/tmp/bench_bs${bs}.json')); print(f'{d[\\\"output_throughput\\\"]:.1f} out tok/s, {d[\\\"median_itl_ms\\\"]:.2f} ms ITL')\"" 2>/dev/null || echo "N/A")
+        log "  BS=${bs}: ${out_tput}"
+    done
 
     log ""
 
