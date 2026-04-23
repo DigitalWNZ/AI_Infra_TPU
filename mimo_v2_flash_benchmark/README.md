@@ -6,23 +6,30 @@ This directory contains the complete artifacts from benchmarking Xiaomi's **MiMo
 
 ## File Overview
 
+### v6e-16 Results (Xiaomi-matched hardware)
+
+| File | Purpose |
+|------|---------|
+| `benchmark_report_v6e16.md` | **v6e-16** benchmark report — reproduces Xiaomi's 654.9 tok/s result |
+| `operation_log_v6e16.md` | **v6e-16** operation log: setup, errors, full DP sweep |
+
 ### Commit cef4a18 (DP-Enabled, recommended)
 
 | File | Purpose |
 |------|---------|
-| `benchmark_report_cef4a18.md` | Performance report with DP sweep, long-context results, and Xiaomi comparison |
-| `operation_log_cef4a18.md` | Operation log for cef4a18 branch: setup, errors, DP sweep, benchmarks |
+| `benchmark_report_cef4a18.md` | **v6e-32** performance report with DP sweep and Xiaomi comparison |
+| `operation_log_cef4a18.md` | **v6e-32** operation log for cef4a18 branch |
 | `benchmark_e2e_cef4a18.sh` | E2E script for **v6e-32** (32 chips, 8 workers) with dp sweep |
-| `benchmark_e2e_cef4a18_v6e16.sh` | E2E script for **v6e-16** (16 chips, 4 workers) with dp sweep — matches Xiaomi's exact HW config |
+| `benchmark_e2e_cef4a18_v6e16.sh` | E2E script for **v6e-16** (16 chips, 4 workers) with dp sweep |
 
 ### origin/main branch (dp=1 only)
 
 | File | Purpose |
 |------|---------|
-| `benchmark_report.md` | Benchmark report on main branch (dp=1) with Xiaomi comparison |
-| `operation_log.md` | Operation log for main branch: setup, errors, benchmarks |
-| `benchmark_e2e.sh` | E2E script for **v6e-32** (32 chips, 8 workers) using origin/main with dp=1 |
-| `benchmark_e2e_v6e16.sh` | E2E script for **v6e-16** (16 chips, 4 workers) using origin/main with dp=1 |
+| `benchmark_report.md` | **v6e-32** benchmark report on main branch (dp=1) |
+| `operation_log.md` | **v6e-32** operation log for main branch |
+| `benchmark_e2e.sh` | E2E script for **v6e-32** using origin/main with dp=1 |
+| `benchmark_e2e_v6e16.sh` | E2E script for **v6e-16** using origin/main with dp=1 |
 | `install_v2.sh` | Per-worker dependency installation (used during the benchmark) |
 | `install.sh` | Initial install attempt using pip (superseded by `install_v2.sh`) |
 | `launch_server.sh` | Per-worker server launch command |
