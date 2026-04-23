@@ -1,6 +1,6 @@
-# MiMo-V2-Flash Benchmark on TPU v6e-32
+# MiMo-V2-Flash Benchmark on TPU v6e
 
-This directory contains the complete artifacts from benchmarking Xiaomi's **MiMo-V2-Flash** (256-expert MoE, FP8) on a **TPU v6e-32** cluster using **SGLangJax**.
+This directory contains the complete artifacts from benchmarking Xiaomi's **MiMo-V2-Flash** (256-expert MoE, FP8) on **TPU v6e** clusters using **SGLangJax**.
 
 ---
 
@@ -12,7 +12,8 @@ This directory contains the complete artifacts from benchmarking Xiaomi's **MiMo
 |------|---------|
 | `benchmark_report_cef4a18.md` | Performance report with DP sweep, long-context results, and Xiaomi comparison |
 | `operation_log_cef4a18.md` | Operation log for cef4a18 branch: setup, errors, DP sweep, benchmarks |
-| `benchmark_e2e_cef4a18.sh` | E2E script using cef4a18 with dp=4 sweep and Xiaomi-matched benchmark |
+| `benchmark_e2e_cef4a18.sh` | E2E script for **v6e-32** (32 chips, 8 workers) with dp sweep |
+| `benchmark_e2e_cef4a18_v6e16.sh` | E2E script for **v6e-16** (16 chips, 4 workers) with dp sweep — matches Xiaomi's exact HW config |
 
 ### origin/main branch (dp=1 only)
 
@@ -20,7 +21,8 @@ This directory contains the complete artifacts from benchmarking Xiaomi's **MiMo
 |------|---------|
 | `benchmark_report.md` | Benchmark report on main branch (dp=1) with Xiaomi comparison |
 | `operation_log.md` | Operation log for main branch: setup, errors, benchmarks |
-| `benchmark_e2e.sh` | E2E script using origin/main with dp=1 |
+| `benchmark_e2e.sh` | E2E script for **v6e-32** (32 chips, 8 workers) using origin/main with dp=1 |
+| `benchmark_e2e_v6e16.sh` | E2E script for **v6e-16** (16 chips, 4 workers) using origin/main with dp=1 |
 | `install_v2.sh` | Per-worker dependency installation (used during the benchmark) |
 | `install.sh` | Initial install attempt using pip (superseded by `install_v2.sh`) |
 | `launch_server.sh` | Per-worker server launch command |
@@ -124,7 +126,9 @@ RANK=1 bash launch_server.sh   # on worker 1
 
 ## Prerequisites
 
-- GCP project with TPU v6e-32 cluster (or larger) already provisioned
+- GCP project with a TPU v6e cluster already provisioned:
+  - **v6e-16** (16 chips, 4 workers) — matches Xiaomi's reference config
+  - **v6e-32** (32 chips, 8 workers) — our primary test cluster
 - `gcloud` CLI authenticated with SSH access to TPU workers
 - Model weights uploaded to a GCS bucket (313 GB, 145 safetensors files)
-- The `benchmark_e2e.sh` script handles everything else
+- Use the `*_v6e16.sh` scripts for v6e-16 clusters, the base scripts for v6e-32
