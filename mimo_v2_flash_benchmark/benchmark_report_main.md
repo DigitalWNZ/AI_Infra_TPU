@@ -12,12 +12,9 @@ We benchmarked **MiMo-V2-Flash** (Xiaomi's Mixture-of-Experts model with 256 rou
 
 **Key findings:**
 - **Output throughput:** 571.9 tok/s at BS=64 (long context), scaling to 1,523.6 tok/s at BS=64 (short context)
-- **Best config with DP:** dp=4, tp=32, ep=32 at BS=128 → **1,808 output tok/s** (+20% over dp=1)
 - **Decode latency:** 17-23 ms median inter-token latency across all configurations
 - **Accuracy:** 97.5% on GSM8K (200 samples, greedy decoding)
-- **Per-chip efficiency:** ~56.5 output tok/s/chip (dp=4, BS=128) — **vs. Xiaomi report's 40.9 tok/s/chip** on v6e-16
-- **DP investigation:** dp>1 requires orphaned commit `cef4a18` (PR #213 with 8,652-line DP implementation). Current `origin/main` does NOT support dp>1.
-- **DP sweep:** Tested dp=1,2,4,8 — dp=4 is best for sustained throughput, dp=2 is most consistent across batch sizes. See Section 8.
+- **Per-chip efficiency:** ~18.9 output tok/s/chip (BS=128) — see Section 5 for comparison with Xiaomi's v6e-16 report
 
 ---
 
@@ -345,67 +342,11 @@ The Xiaomi report identifies these improvement areas for SGLangJax itself:
 
 ---
 
-## 8. Data Parallelism (DP) Sweep (2026-04-22)
-
-### 8.1 Background
-
-The Xiaomi report used `dp=4` on their v6e-16 cluster, but this config crashed on both `origin/main` and `epic/mimo-v2-flash` branches with `UnboundLocalError` because dp>1 is not implemented in the current engine.py (`else: pass` stub).
-
-Investigation revealed that the report used commit `cef4a18` which contains **PR #213 ("data parallelism")** — a 8,652-line merge that implements single-controller DP inside the scheduler using JAX SPMD. This commit is orphaned (force-pushed away from `epic/mimo-v2-flash`).
-
-### 8.2 How DP Works at cef4a18
-
-Unlike GPU SGLang which uses a separate `DataParallelController` process, cef4a18 implements DP **inside the single scheduler**:
-- Mesh: `(data=dp_size, tensor=tp_size/dp_size)` — splits the 2D mesh between data and tensor axes
-- Scheduler maintains per-DP request queues, KV cache allocators, and radix caches
-- Inputs are reordered so each DP rank's tokens are contiguous, sharded along the `"data"` axis
-- EPMoE creates its own separate `(expert, tensor)` mesh for expert routing
-- One scheduler process, one server — no multi-process coordination needed
-
-### 8.3 Sweep Results
-
-All configs: commit `cef4a18`, tp=32, ep=32, moe_backend=epmoe, input=1024, output=512
-
-| Config | Mesh (data, tensor) | BS=64 Out tok/s | BS=128 Out tok/s | BS=200 Out tok/s |
-|--------|--------------------:|----------------:|-----------------:|-----------------:|
-| dp=1   | (1, 32)             | 1,259           | 1,506            | 1,506            |
-| dp=2   | (2, 16)             | 1,325           | 1,741            | 1,600            |
-| **dp=4** | **(4, 8)**        | **1,315**       | **1,808**        | **1,384**        |
-| dp=8   | (8, 4)              | 1,133           | 1,608            | 1,046            |
-
-**Peak burst output throughput:**
-
-| dp=1 | dp=2 | dp=4 | dp=8 |
-|------|------|------|------|
-| 2,667 | 3,239 | 3,704 | 4,025 |
-
-### 8.4 Analysis
-
-**Best sustained throughput: dp=4 at BS=128 → 1,808 output tok/s (+20% over dp=1)**
-
-- **dp=2** is the most consistent performer: strong across all batch sizes, best total throughput at BS=128 (5,177 tok/s), and only minimal degradation at BS=200
-- **dp=4** achieves the highest peak at BS=128 but degrades at high concurrency — each DP rank only handles 50 requests at BS=200, leading to underutilization
-- **dp=8** underperforms across all batch sizes: only 4 tensor chips per DP rank provides insufficient compute per batch element, and 8-way DP coordination overhead dominates
-- **Peak burst throughput increases monotonically with DP** (2,667 → 4,025) because more DP ranks can absorb burst traffic, even though sustained throughput drops at dp=8
-
-### 8.5 Recommendations
-
-| Workload Profile | Best Config | Why |
-|-----------------|-------------|-----|
-| Sustained high throughput (BS=128) | dp=4, tp=32, ep=32 | +20% over dp=1 |
-| Variable batch sizes | dp=2, tp=32, ep=32 | Most consistent across BS=64-200 |
-| Low latency (small batches) | dp=1, tp=32, ep=32 | No DP overhead |
-| Burst absorption | dp=8, tp=32, ep=32 | Highest peak burst (4,025 tok/s) |
-
-**Note:** DP support requires commit `cef4a18` or later with PR #213 merged. The current `origin/main` does NOT support dp>1.
-
----
-
-## 9. Summary Table
+## 8. Summary Table
 
 | Category | Current | Recommended | Expected Gain |
 |----------|---------|-------------|---------------|
-| **Parallelism** | **TP=32, DP=1** | **TP=32, DP=4 (commit cef4a18)** | **+20% throughput (measured)** |
+| Parallelism | TP=32, EP=32, DP=1 | — | — |
 | Batch size | 64 | 128 | +20% throughput |
 | MoE kernel | EPMoE (non-fused) | Fused MoE kernel | Significant ITL reduction |
 | Attention block size | Default | Tuned for MiMo heads | Lower ITL |
@@ -417,7 +358,7 @@ All configs: commit `cef4a18`, tp=32, ep=32, moe_backend=epmoe, input=1024, outp
 
 ---
 
-## 10. Raw Data Reference
+## 9. Raw Data Reference
 
 All benchmark JSON results are stored on worker-0:
 - `/tmp/bench_result.json` (BS=64, input=16384, output=1024)
@@ -425,9 +366,6 @@ All benchmark JSON results are stored on worker-0:
 - `/tmp/bench_bs128.json` (BS=128, input=16384, output=1024)
 - `/tmp/bench_short.json` (BS=64, input=1024, output=1024)
 - `/tmp/evalscope_output/20260421_124635/reports/mimo_model/gsm8k.json`
-
-DP sweep results (2026-04-22, commit cef4a18):
-- dp=1,2,4,8 x BS=64,128,200 — all run with input=1024, output=512
 
 Operation log: `/home/wangez/mimo_v2_flash_benchmark/operation_log.md`
 E2E script: `/home/wangez/mimo_v2_flash_benchmark/benchmark_e2e.sh`
