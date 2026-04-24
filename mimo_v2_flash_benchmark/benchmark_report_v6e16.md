@@ -49,6 +49,15 @@ Long context: input=16384, output=1024.
 
 > dp=2 long BS=128/200 crashed (server instability). dp=8 OOM at startup (HBM exceeded by 191 MB).
 
+### cef4a18 dp=4 — Peak Output Tokens/s
+
+| Context | BS=64 | BS=128 | BS=200 |
+|---------|-------|--------|--------|
+| Short (1024/512) | 2,359 | **3,854** | 2,766 |
+| Long (16384/1024) | **2,496** | 2,380 | 2,341 |
+
+Best peak burst: **3,854 tok/s** (short context BS=128), **2,496 tok/s** (long context BS=64).
+
 ---
 
 ## Xiaomi Comparison
